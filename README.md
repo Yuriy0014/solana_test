@@ -5,15 +5,18 @@
 
 <p align="center">Сервис для получения данных о токене JUP, используя Node.js и фреймворк NestJS.</p>
 <p align="center">
-<a href="https://circleci.com/gh/yourusername/token-data-api" target="_blank"><img src="https://img.shields.io/circleci/build/github/yourusername/token-data-api/master" alt="CircleCI" /></a>
-<a href="https://coveralls.io/github/yourusername/token-data-api?branch=master" target="_blank"><img src="https://coveralls.io/repos/github/yourusername/token-data-api/badge.svg?branch=master" alt="Coverage" /></a>
-<a href="https://opencollective.com/yourusername#backer" target="_blank"><img src="https://opencollective.com/yourusername/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/yourusername#sponsor" target="_blank"><img src="https://opencollective.com/yourusername/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
+
 </p>
 
 ## Описание
 
 Этот сервис предоставляет API для получения данных о токене JUP. Он позволяет пользователю получить информацию о ликвидности токена, деталях последней транзакции, номере слота, кошельке и сумме транзакции.
+
+## Cтек
+* NestJS (C последней версией NodeJS LTS)
+* Typescript
+* @solana/web3.js
+
 
 ## Установка
 
