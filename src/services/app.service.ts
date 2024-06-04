@@ -1,58 +1,40 @@
 import { Injectable } from '@nestjs/common';
-import { HttpService } from '@nestjs/axios';
-import { Connection, PublicKey, ConfirmedSignatureInfo, VersionedTransactionResponse } from '@solana/web3.js';
-import { lastValueFrom } from 'rxjs';
-import { DexscreenerResponse, Pair } from './interfaces/dexscreener-response.interface';
-import { TokenData } from './interfaces/token-data.interface';
-import { EnvironmentVariables } from './types/env';
+import { DexService } from './dex.service';
+import { SolanaService } from './solana.service';
 import { ConfigService } from '@nestjs/config';
+import { VersionedTransactionResponse } from '@solana/web3.js';
+import { EnvironmentVariables } from '../types/env';
+import { TokenData } from '../interfaces/token-data.interface';
 
 @Injectable()
 export class AppService {
   private readonly TOKEN_ADDRESS = this.configService.get<string>('TOKEN_ADDRESS');
   private readonly DEXSCREENER_API_URL = this.configService.get<string>('DEXSCREENER_API_URL');
-  private readonly connection = new Connection(this.configService.get<string>('SOLANA_RPC_URL'), 'confirmed');
 
   constructor(
-    private readonly httpService: HttpService,
+    private readonly dexService: DexService,
+    private readonly solanaService: SolanaService,
     private readonly configService: ConfigService<EnvironmentVariables, true>,
   ) {}
 
-  async getTokenData(): Promise<TokenData | { message: string }> {
+  async getTokenDataV1(): Promise<TokenData | { message: string }> {
     try {
       // Получение ликвидности из Dexscreener
-      const dexResponse = await lastValueFrom(
-        this.httpService.get<DexscreenerResponse>(`${this.DEXSCREENER_API_URL}/${this.TOKEN_ADDRESS}`),
-      );
-      const pairs: Pair[] = dexResponse.data.pairs;
+      const liquidityUSD = await this.dexService.getLiquidity(this.TOKEN_ADDRESS, this.DEXSCREENER_API_URL);
 
-      if (!pairs || pairs.length === 0) {
-        return { message: 'No trading pairs found for the token.' };
-      }
-
-      // Поиск пары JUP/USDC
-      const usdcPair = pairs.find(pair => pair.quoteToken.symbol === 'USDC');
-
-      if (!usdcPair) {
+      if (liquidityUSD === null) {
         return { message: 'No JUP/USDC trading pair found.' };
       }
 
-      const liquidityUSD = usdcPair.liquidity.usd;
-
       // Получение последних транзакций с помощью Solana RPC API
-      const tokenPublicKey = new PublicKey(this.TOKEN_ADDRESS);
-      const limit = 25; // Получаем 25 последних подписей транзакций для увеличения вероятности нахождения покупки
-      const signatures: ConfirmedSignatureInfo[] = await this.connection.getSignaturesForAddress(tokenPublicKey, {
-        limit,
-      });
+      const signatures = await this.solanaService.getRecentTransactions(this.TOKEN_ADDRESS, 25);
 
       for (const signatureInfo of signatures) {
         const lastSignature = signatureInfo.signature;
 
         // Получаем полные данные о транзакции по ее подписи (lastSignature).
-        const transaction: VersionedTransactionResponse | null = await this.connection.getTransaction(lastSignature, {
-          maxSupportedTransactionVersion: 0,
-        });
+        const transaction: VersionedTransactionResponse | null =
+          await this.solanaService.getTransactionData(lastSignature);
 
         // Проверяем, что данные о транзакции существуют и содержат необходимые метаданные и балансы.
         if (
@@ -107,6 +89,74 @@ export class AppService {
               wallet: purchaseOperation.owner || 'Data not available',
               transactionAmount,
             };
+          }
+        }
+      }
+
+      return { message: 'No recent purchase transactions found for the token.' };
+    } catch (error) {
+      console.error('Error fetching token data:', error);
+      throw error;
+    }
+  }
+
+  async getTokenDataV2(): Promise<TokenData | { message: string }> {
+    try {
+      const liquidityUSD = await this.dexService.getLiquidity(this.TOKEN_ADDRESS, this.DEXSCREENER_API_URL);
+
+      if (liquidityUSD === null) {
+        return { message: 'No JUP/USDC trading pair found.' };
+      }
+
+      const signatures = await this.solanaService.getRecentTransactions(this.TOKEN_ADDRESS, 25);
+
+      for (const signatureInfo of signatures) {
+        const lastSignature = signatureInfo.signature;
+        const transaction: VersionedTransactionResponse | null =
+          await this.solanaService.getTransactionData(lastSignature);
+
+        if (
+          transaction &&
+          transaction.meta &&
+          transaction.meta.preTokenBalances &&
+          transaction.meta.postTokenBalances &&
+          transaction.meta.preTokenBalances.length > 0 &&
+          transaction.meta.postTokenBalances.length > 0
+        ) {
+          const { slot } = transaction;
+          const { preTokenBalances, postTokenBalances } = transaction.meta;
+
+          const purchaseOperation = postTokenBalances.find(postBalance => {
+            const preBalance = preTokenBalances.find(
+              preBalance => preBalance.accountIndex === postBalance.accountIndex,
+            );
+            return (
+              postBalance.mint === this.TOKEN_ADDRESS &&
+              preBalance &&
+              postBalance.uiTokenAmount.uiAmount! > (preBalance.uiTokenAmount.uiAmount || 0)
+            );
+          });
+
+          if (purchaseOperation) {
+            const transactionAmount =
+              purchaseOperation.uiTokenAmount.uiAmount! -
+              (preTokenBalances.find(balance => balance.accountIndex === purchaseOperation.accountIndex)?.uiTokenAmount
+                .uiAmount || 0);
+
+            // Проверяем, есть ли в транзакции счета с другими валютами
+            const differentCurrencies = postTokenBalances.some(
+              postBalance => postBalance.mint !== this.TOKEN_ADDRESS && postBalance.owner === purchaseOperation.owner,
+            );
+
+            if (differentCurrencies) {
+              return {
+                liquidity: liquidityUSD,
+                lastTransaction: lastSignature,
+                slot,
+                wallet: purchaseOperation.owner || 'Data not available',
+                transactionAmount,
+              };
+            }
           }
         }
       }
